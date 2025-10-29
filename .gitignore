@@ -50,6 +50,9 @@ downloads/
 config.py
 secrets.py
 
+# Streamlit secrets (never commit!)
+.streamlit/secrets.toml
+
 # Tide data (optional - uncomment if you want to exclude)
 # tide_data/
 # *.csv

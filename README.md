@@ -4,6 +4,25 @@ A graphical user interface (GUI) application for searching, previewing, and down
 
 ![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Streamlit](https://img.shields.io/badge/streamlit-ready-FF4B4B)
+
+## 🌐 Two Versions Available
+
+This application comes in **two versions**:
+
+### 1️⃣ **Desktop Version** (Tkinter)
+- Traditional desktop GUI application
+- Runs locally on your computer
+- Full offline capability
+- File: `planet_imagery_browser.py`
+
+### 2️⃣ **Web Version** (Streamlit) ⭐ NEW!
+- Modern web-based interface
+- Deploy for FREE on Streamlit Cloud
+- Access from anywhere via browser
+- Share with colleagues via URL
+- File: `planet_imagery_browser_streamlit.py`
+- **[📖 See Deployment Guide →](DEPLOYMENT.md)**
 
 ## Features
 
@@ -263,11 +282,36 @@ python planet_imagery_browser.py
 
 ## Usage
 
-### Starting the Application
+### Option 1: Desktop Version (Tkinter)
 
 ```bash
+# Make sure your conda environment is activated
+conda activate planet-browser
+
+# Run the desktop application
 python planet_imagery_browser.py
 ```
+
+The GUI window should open! 🎉
+
+### Option 2: Web Version (Streamlit) 🌐
+
+**Run Locally:**
+```bash
+# Make sure your conda environment is activated
+conda activate planet-browser
+
+# Run the web application
+streamlit run planet_imagery_browser_streamlit.py
+```
+
+Your browser will automatically open to `http://localhost:8501` 🌐
+
+**Deploy to the Web (FREE!):**
+
+See the **[📖 Deployment Guide](DEPLOYMENT.md)** for step-by-step instructions to deploy on Streamlit Cloud for free!
+
+---
 
 ### Basic Workflow
 
