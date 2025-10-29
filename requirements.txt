@@ -1,0 +1,18 @@
+# Planet Imagery Browser - Python Dependencies
+
+# Planet SDK
+planet>=2.0.0
+
+# Image processing
+Pillow>=9.0.0
+
+# HTTP requests
+requests>=2.28.0
+
+# GUI (usually included with Python, but listed for completeness)
+# tkinter - comes with Python standard library
+
+# Optional: GDAL for GeoTIFF support
+# Install separately with: conda install -c conda-forge gdal
+# gdal>=3.4.0
+
