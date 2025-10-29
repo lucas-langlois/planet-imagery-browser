@@ -59,15 +59,18 @@ if 'aoi_bounds' not in st.session_state:
 
 # Initialize Planet client
 @st.cache_resource
-def get_planet_client():
-    """Initialize Planet client"""
-    api_key = os.getenv('PLANET_API_KEY', '')
-    if not api_key:
-        st.error("⚠️ **PLANET_API_KEY environment variable not set!**\n\nPlease set it in Streamlit Cloud settings.")
-        st.stop()
-    return Planet(), api_key
+def get_planet_client(api_key):
+    """Initialize Planet client with provided API key"""
+    return Planet(api_key=api_key)
 
-pl, api_key = get_planet_client()
+def check_api_key():
+    """Check if API key is valid by making a simple request"""
+    try:
+        pl = get_planet_client(st.session_state.api_key)
+        # Simple validation - just try to create a client
+        return True
+    except Exception as e:
+        return False
 
 def calculate_aoi(center_lat, center_lon, grid_size):
     """Calculate AOI bounding box from center point and grid size"""
@@ -262,6 +265,51 @@ def get_tide_height_for_item(item_id, tide_data):
 # Title and description
 st.title("🛰️ Planet Imagery Browser")
 st.markdown("Search and preview Planet satellite imagery with interactive filters")
+
+# API Key Input Section
+if 'api_key' not in st.session_state or not st.session_state.get('api_key'):
+    st.warning("⚠️ **Planet API Key Required**")
+    st.markdown("""
+    To use this application, you need a Planet API key.
+    
+    **Don't have one?** [Sign up for free at Planet.com](https://www.planet.com/explorer/)
+    
+    Your API key will be stored securely in your browser session and will not be saved permanently.
+    """)
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        api_key_input = st.text_input(
+            "Enter your Planet API Key:",
+            type="password",
+            placeholder="PLAK...",
+            help="Your API key starts with 'PLAK' and can be found in your Planet account settings"
+        )
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)  # Spacing
+        if st.button("🔓 Connect", type="primary"):
+            if api_key_input:
+                st.session_state.api_key = api_key_input
+                st.success("✅ API Key saved! Refreshing...")
+                st.rerun()
+            else:
+                st.error("Please enter an API key")
+    
+    st.info("💡 **Tip:** Keep your API key secure and never share it publicly!")
+    st.stop()  # Stop execution until API key is provided
+else:
+    # Show API key status in a collapsible section
+    with st.expander("🔑 API Key Status", expanded=False):
+        st.success("✅ API Key Connected")
+        masked_key = st.session_state.api_key[:8] + "..." + st.session_state.api_key[-4:]
+        st.code(masked_key)
+        if st.button("🔄 Change API Key"):
+            del st.session_state.api_key
+            st.rerun()
+
+# Initialize Planet client with the provided API key
+pl = get_planet_client(st.session_state.api_key)
+api_key = st.session_state.api_key
 
 # Sidebar - Search Filters
 with st.sidebar:

@@ -21,6 +21,7 @@ This application comes in **two versions**:
 - Deploy for FREE on Streamlit Cloud
 - Access from anywhere via browser
 - Share with colleagues via URL
+- **Users enter their own API keys** (no setup required!)
 - File: `planet_imagery_browser_streamlit.py`
 - **[📖 See Deployment Guide →](DEPLOYMENT.md)**
 

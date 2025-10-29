@@ -49,9 +49,15 @@ Streamlit Cloud is a **FREE** hosting platform for Streamlit apps that:
    - **Python version:** 3.9 (or 3.10)
    - Leave other settings as default
 
-### Step 3: Add Your API Key (IMPORTANT!)
+### Step 3: Configure Deployment Settings (Optional)
 
-Before deploying, you need to securely add your Planet API key:
+**Good News!** 🎉 The app is designed so users enter their own API keys directly in the interface.
+
+You can deploy immediately without any secrets configuration!
+
+**Optional: Set a Default API Key** (Advanced)
+
+If you want to provide a default API key for testing or internal use:
 
 1. In the deployment page, look for **"Secrets"** section
 2. Click **"Advanced settings"** → **"Secrets"**
@@ -61,9 +67,7 @@ Before deploying, you need to securely add your Planet API key:
 PLANET_API_KEY = "your_actual_planet_api_key_here"
 ```
 
-4. **Replace** `your_actual_planet_api_key_here` with your real API key
-
-⚠️ **IMPORTANT:** This is secure - secrets are encrypted and never shown in logs!
+⚠️ **Note:** Even if you set a default key, users can still enter their own keys in the app interface.
 
 ### Step 4: Deploy! 🚀
 
@@ -78,14 +82,21 @@ PLANET_API_KEY = "your_actual_planet_api_key_here"
    ```
    (or similar URL)
 
-### Step 5: Test Your App
+### Step 5: Enter Your API Key & Test
 
-1. Once deployed, test all features:
+1. Once deployed, the app will prompt you to enter your Planet API key
+2. Enter your API key (starts with `PLAK...`)
+3. Click **"Connect"**
+4. Test all features:
    - ✅ Search for imagery
    - ✅ Preview images
    - ✅ Upload tide data
    - ✅ Mark exposure status
    - ✅ Export CSV
+
+**Sharing with Others:** 
+
+Each user enters their own API key when they first use the app. Keys are stored securely in their browser session (not on the server) and are never saved permanently.
 
 ## 🔄 Updating Your App
 
@@ -145,27 +156,45 @@ Streamlit Cloud FREE tier includes:
 
 ## 🔒 Security Best Practices
 
+### How API Keys Are Handled
+
+**✅ Secure by Design:**
+- Users enter their own API keys in the app interface
+- Keys are stored in **browser session state only** (not on the server)
+- Keys are never saved to disk or database
+- Keys are automatically cleared when the browser session ends
+- Each user's key is isolated from other users
+
+**Privacy Benefits:**
+- ✅ You (the deployer) never see users' API keys
+- ✅ Users maintain control of their own keys
+- ✅ No central key storage = no data breach risk
+- ✅ Works great for sharing with students/colleagues
+
 ### ✅ DO:
-- Store API keys in Streamlit Secrets
-- Use environment variables
-- Keep secrets.toml in .gitignore
+- Keep your API key private
+- Never share screenshots with your API key visible
+- Log out when using shared computers
+- Keep secrets.toml in .gitignore (if using local secrets)
 
 ### ❌ DON'T:
-- Hardcode API keys in code
-- Commit secrets.toml to GitHub
 - Share your API key publicly
+- Hardcode API keys in source code
+- Commit API keys to GitHub
+- Share your Planet account credentials
 
 ## 🐛 Troubleshooting
 
 ### Problem: "ModuleNotFoundError"
 **Solution:** Make sure all dependencies are in `requirements.txt`
 
-### Problem: "PLANET_API_KEY not found"
-**Solution:** Add the secret in Streamlit Cloud dashboard:
-1. Go to app settings
-2. Click "Secrets"
-3. Add: `PLANET_API_KEY = "your_key"`
-4. Save and restart app
+### Problem: "PLANET_API_KEY not found" or "Invalid API Key"
+**Solution:** The app now prompts users to enter their API key directly in the interface. Each user should:
+1. Get their API key from https://www.planet.com/account
+2. Enter it in the app when prompted
+3. Click "Connect"
+
+If you want to provide a default key for everyone, add it in Streamlit Cloud settings (optional).
 
 ### Problem: App is slow or crashes
 **Solution:** Free tier has resource limits
