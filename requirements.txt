@@ -9,6 +9,9 @@ Pillow>=9.0.0
 # HTTP requests
 requests>=2.28.0
 
+# Timezone handling
+pytz>=2023.3
+
 # GUI (usually included with Python, but listed for completeness)
 # tkinter - comes with Python standard library
 

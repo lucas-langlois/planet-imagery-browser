@@ -1207,32 +1207,63 @@ class PlanetImageryBrowser:
         filename = filedialog.askopenfilename(
             title="Select Tide Data CSV",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-            initialdir="data"
+            initialdir="."
         )
         
         if not filename:
             return  # User cancelled
         
         try:
+            from datetime import timezone
+            import pytz
+            
             self.tide_data = {}
             line_count = 0
             
             with open(filename, 'r', encoding='utf-8') as csvfile:
                 reader = csv.DictReader(csvfile)
                 
+                # Check which format we have by inspecting the header
+                fieldnames = reader.fieldnames
+                
                 for row in reader:
-                    # Parse datetime - expecting ISO format like "2000-12-31T14:00:00Z"
-                    dt_str = row['datetime']
-                    dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-                    
-                    # Store tide height by datetime (rounded to nearest 10 minutes)
-                    # Round to 10-minute intervals to match satellite times
-                    dt_rounded = dt.replace(second=0, microsecond=0)
-                    dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
-                    
-                    tide_height = float(row['tide_height'])
-                    self.tide_data[dt_rounded] = tide_height
-                    line_count += 1
+                    try:
+                        # Try new format first (AEST timezone with DateTime column)
+                        if 'DateTime' in fieldnames and 'Height' in fieldnames:
+                            # Parse datetime - format: "01/01/2025 00:00"
+                            dt_str = row['DateTime']
+                            
+                            # Parse DD/MM/YYYY HH:MM format
+                            dt_naive = datetime.strptime(dt_str, "%d/%m/%Y %H:%M")
+                            
+                            # Convert from AEST (UTC+10) to UTC
+                            aest = pytz.timezone('Australia/Brisbane')  # AEST/AEDT
+                            dt_aest = aest.localize(dt_naive)
+                            dt_utc = dt_aest.astimezone(pytz.UTC)
+                            
+                            tide_height = float(row['Height'])
+                        
+                        # Try old format (ISO format with tide_height column)
+                        elif 'datetime' in fieldnames and 'tide_height' in fieldnames:
+                            dt_str = row['datetime']
+                            dt_utc = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                            tide_height = float(row['tide_height'])
+                        
+                        else:
+                            raise ValueError(f"Unrecognized CSV format. Expected columns: 'DateTime' and 'Height' OR 'datetime' and 'tide_height'")
+                        
+                        # Store tide height by datetime (rounded to nearest 10 minutes)
+                        # Round to 10-minute intervals to match satellite times
+                        dt_rounded = dt_utc.replace(second=0, microsecond=0)
+                        dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
+                        
+                        self.tide_data[dt_rounded] = tide_height
+                        line_count += 1
+                        
+                    except Exception as row_error:
+                        # Skip problematic rows but continue processing
+                        print(f"Skipping row due to error: {row_error}")
+                        continue
             
             self.tide_file_loaded = filename
             
@@ -1245,7 +1276,8 @@ class PlanetImageryBrowser:
             
             messagebox.showinfo(
                 "Tide Data Loaded",
-                f"Successfully loaded {line_count} tide records from:\n{filename}\n\n"
+                f"Successfully loaded {line_count} tide records from:\n{os.path.basename(filename)}\n\n"
+                f"Converted from AEST to UTC timezone\n\n"
                 f"Tide data loaded! You can now:\n"
                 f"  • View tide heights in the results table\n"
                 f"  • Sort by lowest tide using the sort button\n"
@@ -1253,7 +1285,9 @@ class PlanetImageryBrowser:
             )
             
         except Exception as e:
-            messagebox.showerror("Load Error", f"Failed to load tide data:\n\n{str(e)}")
+            import traceback
+            error_details = traceback.format_exc()
+            messagebox.showerror("Load Error", f"Failed to load tide data:\n\n{str(e)}\n\nDetails:\n{error_details}")
     
     def get_tide_height_for_item(self, item_id):
         """

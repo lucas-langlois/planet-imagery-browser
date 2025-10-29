@@ -105,8 +105,21 @@ python planet_imagery_browser.py
 
 ## Tide Data Format
 
-The application expects tide data in CSV format with the following columns:
+The application supports two tide data CSV formats:
 
+### Format 1: AEST Timezone (Australian Format)
+```csv
+Date,Time,Height,DateTime,port_id
+01/01/2025,00:00,1.08,01/01/2025 00:00,58940
+01/01/2025,00:10,1.02,01/01/2025 00:10,58940
+...
+```
+
+- `DateTime`: DD/MM/YYYY HH:MM format
+- `Height`: Tide height in meters
+- Timezone: AEST/AEDT (automatically converted to UTC)
+
+### Format 2: ISO Format (UTC)
 ```csv
 datetime,tide_height
 2024-06-01T00:00:00Z,1.23
@@ -114,8 +127,10 @@ datetime,tide_height
 ...
 ```
 
-- `datetime`: ISO format with timezone (UTC recommended)
+- `datetime`: ISO format with timezone (UTC)
 - `tide_height`: Tide height in meters
+
+The application automatically detects which format you're using and handles timezone conversions appropriately.
 
 ## Download Options
 
