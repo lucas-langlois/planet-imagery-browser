@@ -61,12 +61,17 @@ if 'aoi_bounds' not in st.session_state:
 @st.cache_resource
 def get_planet_client(api_key):
     """Initialize Planet client with provided API key"""
-    return Planet(api_key=api_key)
+    # Planet SDK uses environment variable or session
+    # We need to set it temporarily for the session
+    os.environ['PL_API_KEY'] = api_key
+    return Planet()
 
-def check_api_key():
+def check_api_key(api_key):
     """Check if API key is valid by making a simple request"""
     try:
-        pl = get_planet_client(st.session_state.api_key)
+        # Set environment variable temporarily
+        os.environ['PL_API_KEY'] = api_key
+        pl = Planet()
         # Simple validation - just try to create a client
         return True
     except Exception as e:
@@ -308,6 +313,8 @@ else:
             st.rerun()
 
 # Initialize Planet client with the provided API key
+# Set environment variable for the entire session
+os.environ['PL_API_KEY'] = st.session_state.api_key
 pl = get_planet_client(st.session_state.api_key)
 api_key = st.session_state.api_key
 
