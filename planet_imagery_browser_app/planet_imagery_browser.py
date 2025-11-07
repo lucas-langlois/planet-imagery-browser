@@ -391,6 +391,10 @@ class PlanetImageryBrowser:
             
             # Load initial base map showing Queensland coast
             self.root.after(100, self._load_initial_map)
+            
+            # Also schedule periodic focus release to ensure it works
+            self.root.after(1000, self._release_cef_focus)
+            self.root.after(2000, self._release_cef_focus)
         else:
             self.map_placeholder = tk.Label(
                 map_tab,
@@ -465,8 +469,9 @@ class PlanetImageryBrowser:
         if CEF_AVAILABLE and self.cef_browser:
             try:
                 self.cef_browser.SetFocus(False)
-            except:
-                pass
+                print("DEBUG: CEF focus released")
+            except Exception as e:
+                print(f"DEBUG: Failed to release CEF focus: {e}")
     
     def _build_base_map_html(self, center_lat, center_lon, zoom):
         """Build HTML for the base map without any imagery overlay"""
