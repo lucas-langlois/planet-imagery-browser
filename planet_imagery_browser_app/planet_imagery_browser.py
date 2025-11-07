@@ -636,10 +636,14 @@ class PlanetImageryBrowser:
         # Disable selection mode
         self.aoi_selection_mode = False
         self.set_aoi_btn.config(text="📍 Click Map to Set AOI", bg='#FF9800')
-        self.preview_info_label.config(text=f"AOI center updated to: {lat:.6f}, {lon:.6f}")
+        self.preview_info_label.config(text=f"AOI center updated to: {lat:.6f}, {lon:.6f}. Click 🔍 Search to find imagery.")
         
         # Recalculate AOI
         self.calculate_aoi()
+        
+        # Clear any previous search results since AOI changed
+        if self.results:
+            self._reset_search_state()
     
     def calculate_aoi(self):
         """Calculate AOI bounding box from center point and grid size"""
@@ -692,6 +696,9 @@ class PlanetImageryBrowser:
     def perform_search(self):
         """Execute the search with current filter settings"""
         
+        # Reset everything from previous search
+        self._reset_search_state()
+        
         # Disable search button
         self.search_btn.config(state='disabled', text='Searching...')
         self.status_label.config(text="Searching for imagery...")
@@ -700,6 +707,40 @@ class PlanetImageryBrowser:
         thread = threading.Thread(target=self._search_thread)
         thread.daemon = True
         thread.start()
+    
+    def _reset_search_state(self):
+        """Reset all state from previous search"""
+        # Clear results
+        self.results = []
+        self.current_preview_index = 0
+        
+        # Clear results tree
+        for item in self.results_tree.get_children():
+            self.results_tree.delete(item)
+        
+        # Clear preview state
+        self.current_preview_image = None
+        self.current_preview_clean = None
+        self.current_leaflet_html = None
+        self.current_preview_bounds = None
+        
+        # Reset preview mode to AOI
+        self.preview_mode = 'aoi'
+        
+        # Disable navigation buttons
+        self.prev_btn.config(state='disabled')
+        self.next_btn.config(state='disabled')
+        self.toggle_preview_btn.config(state='disabled', text='🔍 View Full Scene')
+        self.save_preview_btn.config(state='disabled')
+        self.leaflet_btn.config(state='disabled')
+        self.download_btn.config(state='disabled')
+        
+        # Reset preview info
+        self.preview_info_label.config(text="Click '📍 Click Map to Set AOI' to select location, then search")
+        
+        # Reload initial base map
+        if CEF_AVAILABLE and self.cef_initialized:
+            self.root.after(100, self._load_initial_map)
         
     def _search_thread(self):
         """Background thread for search operation"""
