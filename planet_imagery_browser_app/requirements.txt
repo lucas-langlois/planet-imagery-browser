@@ -19,6 +19,9 @@ pandas>=1.5.0
 # Desktop GUI (for Tkinter version - usually included with Python)
 # tkinter - comes with Python standard library
 
+# Interactive map preview (embedded Chromium browser)
+cefpython3>=66.0
+
 # Optional: GDAL for GeoTIFF support
 # Install separately with: conda install -c conda-forge gdal
 # gdal>=3.4.0

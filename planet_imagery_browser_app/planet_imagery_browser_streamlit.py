@@ -5,16 +5,18 @@ Search and preview Planet satellite imagery with interactive filters
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 import os
 import requests
 from requests.auth import HTTPBasicAuth
 from PIL import Image, ImageDraw
 from io import BytesIO
+from zipfile import ZipFile
 from planet import Planet
 from planet import data_filter
 from planet.order_request import build_request, clip_tool, product
+import pytz
 import time
 
 # Page configuration
@@ -112,7 +114,7 @@ def calculate_aoi(center_lat, center_lon, grid_size):
     
     return aoi, (center_lat, center_lon, min_lat, max_lat, min_lon, max_lon)
 
-def perform_search(aoi, start_date, end_date, max_cloud, min_coverage, item_type):
+def perform_search(aoi, start_date, end_date, max_cloud, item_type):
     """Execute the search with current filter settings"""
     # Build filters
     date_filter_obj = data_filter.date_range_filter(
@@ -126,17 +128,11 @@ def perform_search(aoi, start_date, end_date, max_cloud, min_coverage, item_type
         lte=max_cloud / 100.0
     )
     
-    coverage_filter_obj = data_filter.range_filter(
-        field_name="visible_percent",
-        gte=min_coverage
-    )
-    
     geometry_filter_obj = data_filter.geometry_filter(aoi)
     
     combined_filter = data_filter.and_filter([
         date_filter_obj,
         cloud_filter_obj,
-        coverage_filter_obj,
         geometry_filter_obj
     ])
     
@@ -225,8 +221,6 @@ def get_tide_height_for_item(item_id, tide_data):
         return None
     
     try:
-        from datetime import timezone
-        
         item_id_str = str(item_id)
         
         # Check if it has underscores (format: YYYYMMDD_HHMMSS_XX_XXXX)
@@ -267,41 +261,275 @@ def get_tide_height_for_item(item_id, tide_data):
     except Exception as e:
         return None
 
+def parse_tide_csv(df):
+    """Parse tide data from CSV formats."""
+    tide_data = {}
+    normalized = {}
+    for col in df.columns:
+        if isinstance(col, str):
+            normalized[col.strip().lstrip('\ufeff').lower()] = col
+
+    datetime_col = normalized.get('datetime')
+    height_col = normalized.get('height')
+    tide_height_col = normalized.get('tide_height')
+
+    if not datetime_col:
+        raise ValueError("No 'DateTime' or 'datetime' column found in CSV")
+
+    line_count = 0
+
+    if datetime_col and height_col:
+        branch = 'aest'
+        tz_info = "Converted from AEST to UTC timezone"
+        aest = pytz.timezone('Australia/Brisbane')
+    elif datetime_col and tide_height_col:
+        branch = 'utc'
+        tz_info = "Parsed native UTC tide timestamps"
+    else:
+        raise ValueError("Unrecognized CSV format. Expected columns similar to 'DateTime' & 'Height' or 'datetime' & 'tide_height'.")
+
+    for _, row in df.iterrows():
+        dt_raw = row[datetime_col]
+        if pd.isna(dt_raw):
+            continue
+        dt_str = str(dt_raw).strip()
+        if not dt_str:
+            continue
+
+        try:
+            if branch == 'aest':
+                dt_naive = datetime.strptime(dt_str, "%d/%m/%Y %H:%M")
+                dt_aest = aest.localize(dt_naive)
+                dt_utc = dt_aest.astimezone(pytz.UTC)
+                height_value = row[height_col]
+            else:
+                dt_utc = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                height_value = row[tide_height_col]
+
+            height_value = float(str(height_value).strip())
+
+            dt_rounded = dt_utc.replace(second=0, microsecond=0)
+            dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
+
+            tide_data[dt_rounded] = height_value
+            line_count += 1
+        except Exception:
+            continue
+
+    return tide_data, line_count, tz_info
+
+def parse_tide_txt(uploaded_file):
+    """Parse equispaced tide predictions from text files."""
+    content = uploaded_file.getvalue().decode('utf-8', errors='ignore').splitlines()
+    tide_data = {}
+    line_count = 0
+    header_found = False
+
+    for raw_line in content:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if not header_found:
+            if line.lower().startswith('date') and 'height' in line.lower():
+                header_found = True
+            continue
+
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+
+        date_str, time_str = parts[0], parts[1]
+        height_str = parts[-1]
+
+        try:
+            dt_naive = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M")
+            dt_utc = dt_naive.replace(tzinfo=timezone.utc)
+            tide_height = float(height_str)
+
+            dt_rounded = dt_utc.replace(second=0, microsecond=0)
+            dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
+
+            tide_data[dt_rounded] = tide_height
+            line_count += 1
+        except Exception:
+            continue
+
+    if not header_found:
+        raise ValueError("Could not locate the 'Date Time Height' header in the text file.")
+
+    return tide_data, line_count, "Assumed ZULU (UTC) tide timestamps"
+
+def order_and_download_asset(item, clip_to_aoi, aoi_bounds, status_placeholder, download_placeholder):
+    """Create an order for the selected asset and provide a download link."""
+    global pl
+
+    status_placeholder.info("Creating order...")
+    download_placeholder.empty()
+    progress_placeholder = st.empty()
+
+    try:
+        item_id = item['id']
+        item_type = item['properties'].get('item_type', 'PSScene')
+
+        tools = []
+        order_suffix = "full_scene"
+
+        if clip_to_aoi and aoi_bounds:
+            center_lat, center_lon, min_lat, max_lat, min_lon, max_lon = aoi_bounds
+            aoi_polygon = {
+                "type": "Polygon",
+                "coordinates": [[
+                    [min_lon, min_lat],
+                    [max_lon, min_lat],
+                    [max_lon, max_lat],
+                    [min_lon, max_lat],
+                    [min_lon, min_lat]
+                ]]
+            }
+            tools.append(clip_tool(aoi_polygon))
+            order_suffix = "AOI_clip"
+        elif clip_to_aoi and not aoi_bounds:
+            status_placeholder.error("AOI bounds are not available. Run a search to define an AOI before ordering.")
+            return
+
+        order_name = f"{order_suffix}_{item_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        if tools:
+            request = build_request(
+                name=order_name,
+                products=[
+                    product(
+                        item_ids=[item_id],
+                        product_bundle="visual",
+                        item_type=item_type,
+                    )
+                ],
+                tools=tools,
+            )
+        else:
+            request = build_request(
+                name=order_name,
+                products=[
+                    product(
+                        item_ids=[item_id],
+                        product_bundle="visual",
+                        item_type=item_type,
+                    )
+                ],
+            )
+
+        order = pl.orders.create_order(request)
+        order_id = order.get('id')
+        if not order_id:
+            status_placeholder.error("Failed to create order. No order ID returned.")
+            return
+
+        max_wait = 600
+        check_interval = 10
+        elapsed = 0
+
+        while elapsed <= max_wait:
+            order_status = pl.orders.get_order(order_id)
+            state = order_status.get('state', 'unknown')
+            progress_placeholder.info(f"Order status: {state}")
+
+            if state == 'success':
+                results = order_status.get('results', [])
+                if not results:
+                    status_placeholder.warning("Order completed but no downloadable assets were returned.")
+                    progress_placeholder.empty()
+                    return
+
+                files = []
+                for result in results:
+                    download_url = result.get('location')
+                    result_name = result.get('name', f"{item_id}.tif")
+                    if not download_url:
+                        continue
+
+                    response = requests.get(download_url, timeout=60)
+                    if response.status_code == 200:
+                        files.append((result_name, response.content))
+
+                if not files:
+                    status_placeholder.warning("Order succeeded but no files could be downloaded.")
+                    progress_placeholder.empty()
+                    return
+
+                zip_buffer = BytesIO()
+                with ZipFile(zip_buffer, 'w') as zip_file:
+                    for file_name, content in files:
+                        zip_file.writestr(file_name, content)
+                zip_buffer.seek(0)
+
+                progress_placeholder.empty()
+                status_placeholder.success("Order complete! Download your assets below.")
+                download_placeholder.download_button(
+                    label="⬇️ Download Ordered Assets",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"{item_id}_assets.zip",
+                    mime="application/zip",
+                    key=f"download_order_{order_id}"
+                )
+                return
+
+            if state == 'failed':
+                error_msg = order_status.get('error', {}).get('message', 'Unknown error')
+                status_placeholder.error(f"Order failed: {error_msg}")
+                progress_placeholder.empty()
+                return
+
+            if state in ['cancelled', 'partial']:
+                status_placeholder.error(f"Order {state}. Please try again.")
+                progress_placeholder.empty()
+                return
+
+            time.sleep(check_interval)
+            elapsed += check_interval
+
+        status_placeholder.error("Order timed out after 10 minutes. Please try again later.")
+        progress_placeholder.empty()
+
+    except Exception as exc:
+        progress_placeholder.empty()
+        status_placeholder.error(f"Failed to order asset: {exc}")
+
 # Title and description
 st.title("🛰️ Planet Imagery Browser")
 st.markdown("Search and preview Planet satellite imagery with interactive filters")
 
 # API Key Input Section
 if 'api_key' not in st.session_state or not st.session_state.get('api_key'):
-    st.warning("⚠️ **Planet API Key Required**")
-    st.markdown("""
-    To use this application, you need a Planet API key.
-    
-    **Don't have one?** [Sign up for free at Planet.com](https://www.planet.com/explorer/)
-    
-    Your API key will be stored securely in your browser session and will not be saved permanently.
-    """)
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        api_key_input = st.text_input(
-            "Enter your Planet API Key:",
-            type="password",
+    st.warning("🔑 **Enter Your Planet API Key**")
+    st.caption("Your key stays in your browser session only. It is never stored on disk or sent anywhere else.")
+
+    st.session_state.setdefault('api_key_form_buffer', "")
+
+    with st.form("api_key_capture_form", clear_on_submit=False):
+        user_input = st.text_input(
+            "Planet API Key",
+            value=st.session_state.api_key_form_buffer,
             placeholder="PLAK...",
-            help="Your API key starts with 'PLAK' and can be found in your Planet account settings"
+            help="Paste your API key from Planet.com"
         )
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)  # Spacing
-        if st.button("🔓 Connect", type="primary"):
-            if api_key_input:
-                st.session_state.api_key = api_key_input
-                st.success("✅ API Key saved! Refreshing...")
+        submitted = st.form_submit_button("🔓 Connect", type="primary", use_container_width=True)
+
+        if submitted:
+            cleaned = user_input.strip()
+            st.session_state.api_key_form_buffer = cleaned
+
+            if cleaned:
+                st.session_state.api_key = cleaned
+                st.session_state.api_key_form_buffer = ""
+                st.success("✅ API key saved! Loading the app...")
                 st.rerun()
             else:
-                st.error("Please enter an API key")
-    
-    st.info("💡 **Tip:** Keep your API key secure and never share it publicly!")
-    st.stop()  # Stop execution until API key is provided
+                st.error("❌ No API key detected. Please paste your key above and submit again.")
+
+    st.caption("Tip: Paste your key, then click Connect. No extra keystrokes needed.")
+
+    st.stop()
 else:
     # Show API key status in a collapsible section
     with st.expander("🔑 API Key Status", expanded=False):
@@ -346,9 +574,9 @@ with st.sidebar:
         end_date = st.date_input("End Date", value=datetime(2025, 5, 31))
     
     # Filters
-    st.subheader("Filters")
-    max_cloud = st.slider("Max Cloud Cover (%)", 0, 100, 5)
-    min_coverage = st.slider("Min Visible Coverage (%)", 0, 100, 100)
+    st.subheader("Cloud Cover")
+    max_cloud = st.slider("Maximum acceptable cloud cover (%)", 0, 100, 5)
+    st.caption("Imagery with cloud cover greater than this value will be excluded from search results.")
     
     item_type = st.selectbox("Item Type", ["PSScene"])
     
@@ -365,51 +593,39 @@ with st.sidebar:
             start_dt = datetime.combine(start_date, datetime.min.time())
             end_dt = datetime.combine(end_date, datetime.max.time())
             
-            results = perform_search(aoi, start_dt, end_dt, max_cloud, min_coverage, item_type)
+            results = perform_search(aoi, start_dt, end_dt, max_cloud, item_type)
             st.session_state.results = results
             st.session_state.exposure_status = {}
+            st.session_state.selection_flags = {}
+            st.session_state.current_preview_index = 0
+            st.session_state.preview_mode = 'aoi'
             
             st.success(f"✅ Found {len(results)} scenes!")
     
     # Tide Data
     st.subheader("🌊 Tide Data")
-    uploaded_tide_file = st.file_uploader("Upload Tide Data CSV", type=['csv'])
+    uploaded_tide_file = st.file_uploader("Upload Tide Data (CSV or TXT)", type=['csv', 'txt'])
     
     if uploaded_tide_file is not None:
         try:
-            import pytz
-            from datetime import timezone
-            
-            df = pd.read_csv(uploaded_tide_file)
+            line_count = 0
+            tz_info = "Parsed tide timestamps"
             tide_data = {}
-            
-            # Check format
-            if 'DateTime' in df.columns and 'Height' in df.columns:
-                # AEST format
-                for _, row in df.iterrows():
-                    dt_str = row['DateTime']
-                    dt_naive = datetime.strptime(dt_str, "%d/%m/%Y %H:%M")
-                    aest = pytz.timezone('Australia/Brisbane')
-                    dt_aest = aest.localize(dt_naive)
-                    dt_utc = dt_aest.astimezone(pytz.UTC)
-                    
-                    dt_rounded = dt_utc.replace(second=0, microsecond=0)
-                    dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
-                    
-                    tide_data[dt_rounded] = float(row['Height'])
-            elif 'datetime' in df.columns and 'tide_height' in df.columns:
-                # ISO format
-                for _, row in df.iterrows():
-                    dt_str = row['datetime']
-                    dt_utc = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-                    
-                    dt_rounded = dt_utc.replace(second=0, microsecond=0)
-                    dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
-                    
-                    tide_data[dt_rounded] = float(row['tide_height'])
-            
-            st.session_state.tide_data = tide_data
-            st.success(f"✅ Loaded {len(tide_data)} tide records")
+
+            filename_lower = uploaded_tide_file.name.lower()
+            uploaded_tide_file.seek(0)
+
+            if filename_lower.endswith('.txt'):
+                tide_data, line_count, tz_info = parse_tide_txt(uploaded_tide_file)
+            else:
+                df = pd.read_csv(uploaded_tide_file)
+                tide_data, line_count, tz_info = parse_tide_csv(df)
+
+            if line_count == 0:
+                st.warning("No tide records detected in the uploaded file.")
+            else:
+                st.session_state.tide_data = tide_data
+                st.success(f"✅ Loaded {line_count} tide records\n\n{tz_info}")
         except Exception as e:
             st.error(f"Error loading tide data: {str(e)}")
 
@@ -417,21 +633,93 @@ with st.sidebar:
 if len(st.session_state.results) == 0:
     st.info("👈 Configure search filters in the sidebar and click 'Search' to find imagery")
 else:
+    if 'selection_flags' not in st.session_state:
+        st.session_state.selection_flags = {}
     # Create tabs for different views
     tab1, tab2 = st.tabs(["📊 Results Table", "🖼️ Image Preview"])
     
     with tab1:
         st.subheader(f"Search Results ({len(st.session_state.results)} scenes)")
         
-        # Bulk actions
-        col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
-        with col1:
+        flash_message = st.session_state.pop('flash_message', None)
+        if flash_message:
+            st.success(flash_message)
+
+        st.caption("Use the Select column below to choose scenes for bulk actions.")
+
+        table_data = []
+        for idx, item in enumerate(st.session_state.results):
+            props = item['properties']
+            item_id = item['id']
+            tide_height = get_tide_height_for_item(item_id, st.session_state.tide_data)
+
+            visible_val = props.get('visible_percent')
+            clear_val = props.get('clear_percent')
+            gsd_val = props.get('gsd')
+
+            visible_str = f"{visible_val:.1f}" if isinstance(visible_val, (int, float)) else ("N/A" if visible_val is None else str(visible_val))
+            clear_str = f"{clear_val:.1f}" if isinstance(clear_val, (int, float)) else ("N/A" if clear_val is None else str(clear_val))
+            gsd_str = f"{gsd_val:.2f}" if isinstance(gsd_val, (int, float)) else ("N/A" if gsd_val is None else str(gsd_val))
+            tide_str = f"{tide_height:.2f}" if tide_height is not None else "N/A"
+
+            is_selected = st.session_state.selection_flags.get(item_id, False)
+
+            table_data.append({
+                '#': idx + 1,
+                'Item ID': item_id,
+                'Date': props['acquired'][:10],
+                'Cloud %': f"{props['cloud_cover']*100:.1f}",
+                'Visible %': visible_str,
+                'Clear %': clear_str,
+                'GSD (m)': gsd_str,
+                'Tide (m)': tide_str,
+                'Satellite': props.get('satellite_id', 'N/A'),
+                'Exposure': st.session_state.exposure_status.get(item_id, 'Not Marked'),
+                'Select': is_selected
+            })
+
+        df = pd.DataFrame(table_data)
+
+        column_config = {
+            'Select': st.column_config.CheckboxColumn('Select', help='Toggle to include item in bulk actions', default=False)
+        }
+        disabled_cols = [col for col in df.columns if col != 'Select']
+
+        edited_df = st.data_editor(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            disabled=disabled_cols,
+            column_config=column_config
+        )
+
+        st.session_state.selection_flags = {
+            row['Item ID']: bool(row.get('Select', False))
+            for _, row in edited_df.iterrows()
+        }
+        selected_ids = [item_id for item_id, selected in st.session_state.selection_flags.items() if selected]
+        st.caption(f"Selected for bulk actions: {len(selected_ids)} item(s)")
+
+        action_cols = st.columns([2, 2, 2, 2])
+        with action_cols[0]:
             if st.button("☀️ Mark Selected as Exposed"):
-                st.info("Select rows in table, then use checkboxes below")
-        with col2:
+                if not selected_ids:
+                    st.warning("Select items in the table using the 'Select' column.")
+                else:
+                    for item_id in selected_ids:
+                        st.session_state.exposure_status[item_id] = 'Exposed'
+                    st.session_state.flash_message = f"Marked {len(selected_ids)} item(s) as Exposed"
+                    st.rerun()
+        with action_cols[1]:
             if st.button("🌊 Mark Selected as Not Exposed"):
-                st.info("Select rows in table, then use checkboxes below")
-        with col3:
+                if not selected_ids:
+                    st.warning("Select items in the table using the 'Select' column.")
+                else:
+                    for item_id in selected_ids:
+                        st.session_state.exposure_status[item_id] = 'Not Exposed'
+                    st.session_state.flash_message = f"Marked {len(selected_ids)} item(s) as Not Exposed"
+                    st.rerun()
+        with action_cols[2]:
             if st.button("↓ Sort by Lowest Tide"):
                 if st.session_state.tide_data:
                     results_with_tide = []
@@ -440,85 +728,70 @@ else:
                         results_with_tide.append((item, tide_height))
                     results_with_tide.sort(key=lambda x: (x[1] is None, x[1] if x[1] is not None else float('inf')))
                     st.session_state.results = [item for item, _ in results_with_tide]
-                    st.success("✅ Sorted by tide height")
+                    st.session_state.flash_message = "Results sorted by tide height"
+                    st.rerun()
                 else:
                     st.warning("Please load tide data first")
-        with col4:
+        with action_cols[3]:
             if st.button("📊 Export to CSV"):
-                # Create DataFrame for export
                 export_data = []
                 for item in st.session_state.results:
                     item_id = item['id']
                     props = item['properties']
                     acquired_dt = datetime.fromisoformat(props['acquired'].replace('Z', '+00:00'))
                     tide_height = get_tide_height_for_item(item_id, st.session_state.tide_data)
-                    
+
                     export_data.append({
                         'Item ID': item_id,
                         'Acquired Date': acquired_dt.strftime('%Y-%m-%d'),
                         'Acquired Time': acquired_dt.strftime('%H:%M:%S'),
                         'Cloud Cover (%)': f"{props['cloud_cover']*100:.2f}",
                         'Visible Percent (%)': props.get('visible_percent', ''),
+                        'Clear Percent (%)': props.get('clear_percent', ''),
                         'GSD (m)': props.get('gsd', ''),
                         'Tide Height (m)': f"{tide_height:.2f}" if tide_height is not None else "",
-                        'Exposure Status': st.session_state.exposure_status.get(item_id, 'Not Marked')
+                        'Satellite ID': props.get('satellite_id', ''),
+                        'Item Type': props.get('item_type', ''),
+                        'Exposure Status': st.session_state.exposure_status.get(item_id, 'Not Marked'),
+                        'View Angle': props.get('view_angle', ''),
+                        'Sun Elevation': props.get('sun_elevation', ''),
+                        'Sun Azimuth': props.get('sun_azimuth', '')
                     })
-                
+
                 df_export = pd.DataFrame(export_data)
                 csv = df_export.to_csv(index=False)
                 st.download_button(
                     label="💾 Download CSV",
                     data=csv,
                     file_name=f"planet_imagery_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    key="export_results"
                 )
-        
-        # Create results table
-        table_data = []
-        for idx, item in enumerate(st.session_state.results):
-            props = item['properties']
-            item_id = item['id']
-            tide_height = get_tide_height_for_item(item_id, st.session_state.tide_data)
-            
-            table_data.append({
-                '#': idx + 1,
-                'Item ID': item_id,
-                'Date': props['acquired'][:10],
-                'Cloud %': f"{props['cloud_cover']*100:.1f}",
-                'Visible %': f"{props.get('visible_percent', 'N/A')}",
-                'GSD (m)': f"{props.get('gsd', 'N/A')}",
-                'Tide (m)': f"{tide_height:.2f}" if tide_height is not None else "N/A",
-                'Exposure': st.session_state.exposure_status.get(item_id, 'Not Marked')
-            })
-        
-        df = pd.DataFrame(table_data)
-        
-        # Display table with selection
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        
-        # Individual row actions
+
+        st.divider()
+
         st.subheader("Mark Individual Items")
         selected_item_num = st.number_input("Select Item #", min_value=1, max_value=len(st.session_state.results), value=1)
-        
+
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("☀️ Mark as Exposed", key="mark_exposed"):
                 item_id = st.session_state.results[selected_item_num - 1]['id']
                 st.session_state.exposure_status[item_id] = 'Exposed'
-                st.success(f"Marked item #{selected_item_num} as Exposed")
+                st.session_state.flash_message = f"Marked item #{selected_item_num} as Exposed"
                 st.rerun()
         with col2:
             if st.button("🌊 Mark as Not Exposed", key="mark_not_exposed"):
                 item_id = st.session_state.results[selected_item_num - 1]['id']
                 st.session_state.exposure_status[item_id] = 'Not Exposed'
-                st.success(f"Marked item #{selected_item_num} as Not Exposed")
+                st.session_state.flash_message = f"Marked item #{selected_item_num} as Not Exposed"
                 st.rerun()
         with col3:
             if st.button("⎯ Clear Status", key="clear_status"):
                 item_id = st.session_state.results[selected_item_num - 1]['id']
                 if item_id in st.session_state.exposure_status:
                     del st.session_state.exposure_status[item_id]
-                st.success(f"Cleared status for item #{selected_item_num}")
+                st.session_state.flash_message = f"Cleared status for item #{selected_item_num}"
                 st.rerun()
     
     with tab2:
@@ -581,6 +854,18 @@ else:
                     file_name=f"{item_id}_preview.png",
                     mime="image/png"
                 )
+
+                download_status = st.empty()
+                download_link_placeholder = st.empty()
+                if st.button("💾 Download Asset", key=f"download_asset_{st.session_state.current_preview_index}"):
+                    with st.spinner("Ordering asset... This may take several minutes."):
+                        order_and_download_asset(
+                            item,
+                            clip_to_aoi,
+                            st.session_state.aoi_bounds,
+                            download_status,
+                            download_link_placeholder
+                        )
             else:
                 st.error("Could not load preview image")
             

@@ -27,7 +27,7 @@ This application comes in **two versions**:
 
 ## Features
 
-- 🔍 **Interactive Search**: Filter satellite imagery by date range, cloud cover, coverage, and area of interest
+- 🔍 **Interactive Search**: Filter satellite imagery by date range, cloud cover, and area of interest
 - 🗺️ **Flexible AOI Selection**: Define search area using center coordinates with multiple grid size options (1x1 to 9x9 tiles)
 - 🖼️ **High-Resolution Preview**: View AOI-specific or full scene previews with tile-based rendering
 - 🌊 **Tide Integration**: Load tide data and sort imagery by lowest tide height
@@ -159,44 +159,199 @@ Geospatial Data Abstraction Library - allows saving images with geographic coord
 
 ---
 
-### Step 6: Set Up Your Planet API Key
+### Step 6: Set Up Your Planet API Key 🔑
 
-**Get your API key:**
-1. Sign up at https://www.planet.com/
-2. Go to Account Settings → API Keys
-3. Copy your API key (starts with `PLAK...`)
+#### A. Get Your API Key
 
-**Set it as an environment variable (Recommended - Secure!):**
+1. **Sign up** at https://www.planet.com/
+2. **Log in** to your Planet account
+3. Navigate to **Account Settings** → **API Keys**
+4. **Copy** your API key (starts with `PLAK...`)
+
+⚠️ **Keep your API key secure!** Never share it publicly or commit it to version control.
+
+---
+
+#### B. Set the API Key (Choose One Method)
+
+You have **four options** for providing your API key to the application (recommended order):
+
+##### 📝 **Option 1: Use config.py File (EASIEST & RECOMMENDED for Local Development)**
+
+This is the simplest method and works reliably across all platforms.
+
+1. **Copy the example config file**:
+```bash
+cd planet_imagery_browser_app
+cp config.example.py config.py
+```
+
+Or on **Windows**:
+```powershell
+cd planet_imagery_browser_app
+Copy-Item config.example.py config.py
+```
+
+2. **Edit config.py** and replace `your_api_key_here` with your actual API key:
+```python
+PLANET_API_KEY = "PLAKxxxxxxxxxxxxxxxxxxxxx"
+```
+
+3. **Save the file** - That's it! The app will automatically load your key from this file.
+
+**Advantages:**
+- ✅ Works immediately, no terminal restart needed
+- ✅ Persists across sessions
+- ✅ Easy for other users to set up (just copy and edit one file)
+- ✅ Already in .gitignore (won't be committed by accident)
+
+---
+
+##### 🎯 **Option 2: Set Permanent Environment Variable**
+
+This sets the key once and it persists across sessions and terminal restarts.
+
+**Windows (PowerShell - Run as Administrator):**
+
+1. **Open PowerShell as Administrator**:
+   - Right-click Start menu → "Windows PowerShell (Admin)" or "Terminal (Admin)"
+
+2. **Run this command** (replace `YOUR_KEY_HERE` with your actual key):
+```powershell
+[System.Environment]::SetEnvironmentVariable('PLANET_API_KEY', 'PLAKxxxxxxxxxxxxxxxxxxxxx', 'User')
+```
+
+3. **Restart your terminal** for changes to take effect
+
+4. **Verify it's set**:
+```powershell
+$env:PLANET_API_KEY
+# Should display your API key
+```
+
+**Mac/Linux (Bash):**
+
+1. **Open your shell profile** in a text editor:
+```bash
+# For bash (most common)
+nano ~/.bashrc
+
+# OR for zsh (macOS default since Catalina)
+nano ~/.zshrc
+```
+
+2. **Add this line** at the end (replace with your key):
+```bash
+export PLANET_API_KEY="PLAKxxxxxxxxxxxxxxxxxxxxx"
+```
+
+3. **Save and close** (Ctrl+X, then Y, then Enter in nano)
+
+4. **Reload your profile**:
+```bash
+source ~/.bashrc  # or source ~/.zshrc
+```
+
+5. **Verify it's set**:
+```bash
+echo $PLANET_API_KEY
+# Should display your API key
+```
+
+---
+
+##### ⚡ **Option 3: Set for Current Session Only**
+
+This sets the key only for your current terminal session (you'll need to do this each time you open a new terminal).
 
 **Windows (PowerShell):**
 ```powershell
-$env:PLANET_API_KEY="your_api_key_here"
+$env:PLANET_API_KEY="PLAKxxxxxxxxxxxxxxxxxxxxx"
 ```
 
 **Windows (Command Prompt):**
 ```cmd
-set PLANET_API_KEY=your_api_key_here
+set PLANET_API_KEY=PLAKxxxxxxxxxxxxxxxxxxxxx
 ```
 
 **Mac/Linux:**
 ```bash
-export PLANET_API_KEY="your_api_key_here"
+export PLANET_API_KEY="PLAKxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-**To set it permanently:**
+---
 
-**Windows:**
+##### 🖱️ **Option 4: Enter When Prompted**
+
+If you don't set the environment variable, the application will prompt you to enter your API key when it starts:
+
+1. Run the application: `python planet_imagery_browser.py`
+2. A dialog box will appear asking for your API key
+3. Enter your key (it will be hidden for security)
+4. Click OK
+
+**Note:** You'll need to enter the key each time you run the app with this method.
+
+---
+
+#### C. Verify Your API Key is Working
+
+Test your API key with a simple command:
+
+**Windows (PowerShell):**
 ```powershell
-# Open PowerShell as Administrator
-[System.Environment]::SetEnvironmentVariable('PLANET_API_KEY', 'your_api_key_here', 'User')
+# Check if the variable is set
+$env:PLANET_API_KEY
+
+# Test API access
+python -c "from planet import Auth; print('API Key Valid!' if Auth.from_env().value else 'API Key Not Found')"
 ```
 
 **Mac/Linux:**
-Add to your `~/.bashrc` or `~/.zshrc`:
 ```bash
-echo 'export PLANET_API_KEY="your_api_key_here"' >> ~/.bashrc
-source ~/.bashrc
+# Check if the variable is set
+echo $PLANET_API_KEY
+
+# Test API access
+python -c "from planet import Auth; print('API Key Valid!' if Auth.from_env().value else 'API Key Not Found')"
 ```
+
+✅ If you see your API key (or "API Key Valid!"), you're all set!
+
+---
+
+#### D. Troubleshooting API Key Issues
+
+**Problem: "API Key Not Found" or prompt appears every time**
+- **Solution**: Make sure you've set the permanent environment variable (Option 1)
+- **Windows**: Restart your terminal after running the PowerShell command
+- **Mac/Linux**: Run `source ~/.bashrc` or `source ~/.zshrc`
+
+**Problem: "Authentication failed" when searching**
+- **Solution**: Your API key might be incorrect or expired
+- **Check**: Log into Planet.com and verify your key is still active
+- **Try**: Copy the key again (avoid extra spaces)
+
+**Problem: Environment variable not persisting after restart**
+- **Windows**: Make sure you ran PowerShell as Administrator
+- **Mac/Linux**: Check that you added the export line to the correct file (~/.bashrc or ~/.zshrc)
+
+**Problem: Special characters in API key causing issues**
+- **Solution**: Always wrap your key in quotes: `"PLAKxxxxx"`
+
+---
+
+#### E. Security Best Practices
+
+✅ **DO:**
+- Store your API key in environment variables
+- Keep your key private and secure
+- Use different keys for different projects/environments if needed
+
+❌ **DON'T:**
+- Hardcode your API key in Python files
+- Share your API key in screenshots or public repositories
+- Commit your API key to version control (Git)
 
 ---
 
@@ -323,7 +478,6 @@ See the **[📖 Deployment Guide](DEPLOYMENT.md)** for step-by-step instructions
 2. **Set Search Filters**
    - Date range (start and end dates)
    - Maximum cloud cover percentage
-   - Minimum visible coverage percentage
    - Item type (PlanetScope)
 
 3. **Search for Imagery**
