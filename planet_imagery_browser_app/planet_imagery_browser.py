@@ -254,10 +254,19 @@ class PlanetImageryBrowser:
                 bg='#f0f0f0', fg='#666', font=('Arial', 8)).pack(anchor='w', padx=20)
         
         # Search Button
-        self.search_btn = tk.Button(scrollable_frame, text="🔍 Search", command=self.perform_search,
+        # Search and Reset buttons
+        button_frame = tk.Frame(scrollable_frame, bg='#f0f0f0')
+        button_frame.pack(pady=20, padx=10, fill=tk.X)
+        
+        self.search_btn = tk.Button(button_frame, text="🔍 Search", command=self.perform_search,
                                     bg='#4CAF50', fg='white', font=('Arial', 12, 'bold'),
                                     padx=20, pady=10, cursor='hand2')
-        self.search_btn.pack(pady=20, fill=tk.X, padx=10)
+        self.search_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+        
+        self.reset_btn = tk.Button(button_frame, text="🔄 Reset", command=self.reset_search,
+                                   bg='#FF9800', fg='white', font=('Arial', 12, 'bold'),
+                                   padx=20, pady=10, cursor='hand2')
+        self.reset_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(5, 0))
         
         # Status Label
         self.status_label = tk.Label(scrollable_frame, text="Ready to search", 
@@ -395,10 +404,15 @@ class PlanetImageryBrowser:
     def _on_entry_focus(self, event):
         """Handle entry field focus - tell CEF to release keyboard focus"""
         if CEF_AVAILABLE and self.cef_browser:
-            # Set focus to false in CEF so keyboard events go to Tkinter
-            self.cef_browser.SetFocus(False)
+            try:
+                # Set focus to false in CEF so keyboard events go to Tkinter
+                self.cef_browser.SetFocus(False)
+            except:
+                pass  # CEF might not be ready yet
         # Make sure the entry field has focus
         event.widget.focus_force()
+        # Schedule another focus check to ensure it sticks
+        event.widget.after(50, lambda: event.widget.focus_force())
     
     def _on_map_click(self, event):
         """Handle map click - give focus back to CEF"""
@@ -636,14 +650,15 @@ class PlanetImageryBrowser:
         # Disable selection mode
         self.aoi_selection_mode = False
         self.set_aoi_btn.config(text="📍 Click Map to Set AOI", bg='#FF9800')
-        self.preview_info_label.config(text=f"AOI center updated to: {lat:.6f}, {lon:.6f}. Click 🔍 Search to find imagery.")
         
         # Recalculate AOI
         self.calculate_aoi()
         
-        # Clear any previous search results since AOI changed
+        # Update message
         if self.results:
-            self._reset_search_state()
+            self.preview_info_label.config(text=f"AOI updated to: {lat:.6f}, {lon:.6f}. Click 🔄 Reset to clear old results, or 🔍 Search for new imagery.")
+        else:
+            self.preview_info_label.config(text=f"AOI center set to: {lat:.6f}, {lon:.6f}. Click 🔍 Search to find imagery.")
     
     def calculate_aoi(self):
         """Calculate AOI bounding box from center point and grid size"""
@@ -693,11 +708,22 @@ class PlanetImageryBrowser:
             messagebox.showerror("Input Error", f"Invalid AOI parameters: {str(e)}")
             return None, None
             
+    def reset_search(self):
+        """Reset search and reload initial map"""
+        self._reset_search_state(reload_map=True)
+        self.status_label.config(text="Ready to search")
+        messagebox.showinfo("Reset Complete", "Search cleared. Set your AOI and search again.")
+    
     def perform_search(self):
         """Execute the search with current filter settings"""
         
-        # Reset everything from previous search (but don't reload map yet)
-        self._reset_search_state(reload_map=False)
+        # Clear previous results but don't reload map during search
+        if self.results:
+            # Only clear results tree, keep map as-is
+            for item in self.results_tree.get_children():
+                self.results_tree.delete(item)
+            self.results = []
+            self.current_preview_index = 0
         
         # Disable search button
         self.search_btn.config(state='disabled', text='Searching...')
