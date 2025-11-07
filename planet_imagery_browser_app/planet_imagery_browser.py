@@ -696,8 +696,8 @@ class PlanetImageryBrowser:
     def perform_search(self):
         """Execute the search with current filter settings"""
         
-        # Reset everything from previous search
-        self._reset_search_state()
+        # Reset everything from previous search (but don't reload map yet)
+        self._reset_search_state(reload_map=False)
         
         # Disable search button
         self.search_btn.config(state='disabled', text='Searching...')
@@ -708,7 +708,7 @@ class PlanetImageryBrowser:
         thread.daemon = True
         thread.start()
     
-    def _reset_search_state(self):
+    def _reset_search_state(self, reload_map=True):
         """Reset all state from previous search"""
         # Clear results
         self.results = []
@@ -736,10 +736,13 @@ class PlanetImageryBrowser:
         self.download_btn.config(state='disabled')
         
         # Reset preview info
-        self.preview_info_label.config(text="Click '📍 Click Map to Set AOI' to select location, then search")
+        if reload_map:
+            self.preview_info_label.config(text="Click '📍 Click Map to Set AOI' to select location, then search")
+        else:
+            self.preview_info_label.config(text="Searching for imagery...")
         
-        # Reload initial base map
-        if CEF_AVAILABLE and self.cef_initialized:
+        # Reload initial base map (only if requested, not during active search)
+        if reload_map and CEF_AVAILABLE and self.cef_initialized:
             self.root.after(100, self._load_initial_map)
         
     def _search_thread(self):
