@@ -99,9 +99,13 @@ class PlanetImageryBrowser:
         self.map_container = None
         self.cef_initialized = False
         self.aoi_selection_mode = False
+        self._aoi_selection_active = False  # Track when user is actively selecting AOI on map
         
         # Create main layout
         self.create_ui()
+        
+        # Set initial focus to left panel after UI is created
+        self.root.after(500, self._set_initial_focus)
         
     def create_ui(self):
         """Create the main user interface"""
@@ -112,6 +116,9 @@ class PlanetImageryBrowser:
         
         left_panel = tk.Frame(main_paned, width=400, bg='#f0f0f0')
         main_paned.add(left_panel, width=400, minsize=350, stretch="never")
+        
+        # Make left panel able to receive focus
+        left_panel.focus_set()
         
         # Bind click on left panel to release CEF focus
         left_panel.bind('<Button-1>', self._on_left_panel_click)
@@ -184,12 +191,14 @@ class PlanetImageryBrowser:
         self.lat_entry.insert(0, "-19.1836382")
         self.lat_entry.grid(row=0, column=1, pady=2)
         self.lat_entry.bind('<FocusIn>', self._on_entry_focus)
+        self.lat_entry.bind('<Button-1>', self._on_entry_focus)  # Also bind click event
         
         tk.Label(aoi_frame, text="Center Longitude:", bg='#f0f0f0').grid(row=1, column=0, sticky='w', pady=2)
         self.lon_entry = tk.Entry(aoi_frame, width=20)
         self.lon_entry.insert(0, "146.6825115")
         self.lon_entry.grid(row=1, column=1, pady=2)
         self.lon_entry.bind('<FocusIn>', self._on_entry_focus)
+        self.lon_entry.bind('<Button-1>', self._on_entry_focus)  # Also bind click event
         
         tk.Label(aoi_frame, text="Grid Size (tiles):", bg='#f0f0f0').grid(row=2, column=0, sticky='w', pady=2)
         self.grid_size_var = tk.StringVar(value="3x3 (~0.59 km²)")
@@ -219,12 +228,14 @@ class PlanetImageryBrowser:
         self.start_date_entry.insert(0, "2024-06-01")
         self.start_date_entry.grid(row=0, column=1, pady=2)
         self.start_date_entry.bind('<FocusIn>', self._on_entry_focus)
+        self.start_date_entry.bind('<Button-1>', self._on_entry_focus)  # Also bind click event
         
         tk.Label(date_frame, text="End Date (YYYY-MM-DD):", bg='#f0f0f0').grid(row=1, column=0, sticky='w', pady=2)
         self.end_date_entry = tk.Entry(date_frame, width=20)
         self.end_date_entry.insert(0, "2025-05-31")
         self.end_date_entry.grid(row=1, column=1, pady=2)
         self.end_date_entry.bind('<FocusIn>', self._on_entry_focus)
+        self.end_date_entry.bind('<Button-1>', self._on_entry_focus)  # Also bind click event
         
         # Cloud Cover Section - Removed (no cloud filter)
         
@@ -389,12 +400,11 @@ class PlanetImageryBrowser:
             # Bind click event to manage focus properly
             self.cef_frame.bind('<Button-1>', self._on_map_click)
             
-            # Load initial base map showing Queensland coast
-            self.root.after(100, self._load_initial_map)
+            # Start focus monitor immediately after CEF init to prevent it from stealing focus
+            self.root.after(100, self._start_focus_monitor)
             
-            # Also schedule periodic focus release to ensure it works
-            self.root.after(1000, self._release_cef_focus)
-            self.root.after(2000, self._release_cef_focus)
+            # Load initial base map showing Queensland coast
+            self.root.after(200, self._load_initial_map)
         else:
             self.map_placeholder = tk.Label(
                 map_tab,
@@ -408,18 +418,36 @@ class PlanetImageryBrowser:
             )
             self.map_placeholder.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
+    def _set_initial_focus(self):
+        """Set initial focus to left panel and latitude entry after app loads"""
+        print("DEBUG: Setting initial focus to entry fields")
+        if CEF_AVAILABLE and self.cef_browser:
+            try:
+                self.cef_browser.SetFocus(False)
+                print("DEBUG: CEF focus released for initial setup")
+            except:
+                pass
+        # Give focus to the latitude entry field
+        self.lat_entry.focus_force()
+        # Schedule additional focus sets to ensure it sticks
+        self.root.after(100, lambda: self.lat_entry.focus_force())
+        self.root.after(300, lambda: self.lat_entry.focus_force())
+    
     def _on_entry_focus(self, event):
         """Handle entry field focus - tell CEF to release keyboard focus"""
         if CEF_AVAILABLE and self.cef_browser:
             try:
                 # Set focus to false in CEF so keyboard events go to Tkinter
                 self.cef_browser.SetFocus(False)
+                print("DEBUG: CEF focus released for entry field")
             except:
                 pass  # CEF might not be ready yet
-        # Make sure the entry field has focus
+        # Make sure the entry field has focus - use focus_force multiple times
         event.widget.focus_force()
-        # Schedule another focus check to ensure it sticks
+        # Schedule additional focus checks to ensure it sticks
+        event.widget.after(10, lambda: event.widget.focus_force())
         event.widget.after(50, lambda: event.widget.focus_force())
+        event.widget.after(100, lambda: event.widget.focus_force())
     
     def _on_left_panel_click(self, event):
         """Handle left panel click - release CEF focus"""
@@ -461,8 +489,14 @@ class PlanetImageryBrowser:
             self.set_aoi_btn.config(state='normal')
             self.preview_info_label.config(text="Click '📍 Click Map to Set AOI' button, then click on the map to set your location")
             
-            # Release CEF focus after map loads so user can edit search filters
+            # Release CEF focus aggressively after map loads so user can edit search filters immediately
+            # Schedule multiple releases to ensure it sticks
+            self.root.after(100, self._release_cef_focus)
+            self.root.after(300, self._release_cef_focus)
             self.root.after(500, self._release_cef_focus)
+            self.root.after(800, self._release_cef_focus)
+            self.root.after(1200, self._release_cef_focus)
+            # Note: focus monitor is already started earlier in create_results_panel
     
     def _release_cef_focus(self):
         """Helper to release CEF focus"""
@@ -472,6 +506,20 @@ class PlanetImageryBrowser:
                 print("DEBUG: CEF focus released")
             except Exception as e:
                 print(f"DEBUG: Failed to release CEF focus: {e}")
+    
+    def _start_focus_monitor(self):
+        """Start a periodic timer to ensure CEF doesn't steal focus"""
+        def monitor():
+            if CEF_AVAILABLE and self.cef_browser and not self._aoi_selection_active:
+                try:
+                    self.cef_browser.SetFocus(False)
+                except:
+                    pass
+            # Schedule next check - check every 50ms for more responsive focus management
+            self.root.after(50, monitor)
+        
+        # Start the monitoring loop immediately
+        monitor()
     
     def _build_base_map_html(self, center_lat, center_lon, zoom):
         """Build HTML for the base map without any imagery overlay"""
@@ -634,8 +682,16 @@ class PlanetImageryBrowser:
     def enable_aoi_selection(self):
         """Enable AOI selection mode - user can click on map to set center point"""
         self.aoi_selection_mode = True
+        self._aoi_selection_active = True  # Allow CEF to have focus for map clicking
         self.set_aoi_btn.config(text="🎯 Click on Map Now!", bg='#4CAF50')
         self.preview_info_label.config(text="Click anywhere on the map to set new AOI center point")
+        
+        # Give CEF focus so user can click on map
+        if CEF_AVAILABLE and self.cef_browser:
+            try:
+                self.cef_browser.SetFocus(True)
+            except:
+                pass
         
         # Regenerate the map with click handler enabled
         if self.current_leaflet_html and self.current_preview_clean:
@@ -679,12 +735,14 @@ class PlanetImageryBrowser:
         
         # Disable selection mode
         self.aoi_selection_mode = False
+        self._aoi_selection_active = False  # Resume automatic focus release
         self.set_aoi_btn.config(text="📍 Click Map to Set AOI", bg='#FF9800')
         
         # Release CEF focus so user can interact with controls
         if CEF_AVAILABLE and self.cef_browser:
             try:
                 self.cef_browser.SetFocus(False)
+                print("DEBUG: CEF focus released after AOI selection")
             except:
                 pass
         
@@ -763,12 +821,23 @@ class PlanetImageryBrowser:
         
         print("DEBUG: Starting search...")
         
-        # Release CEF focus immediately so user can edit fields during search
-        if CEF_AVAILABLE and self.cef_browser:
-            try:
-                self.cef_browser.SetFocus(False)
-            except:
-                pass
+        # Release CEF focus immediately and repeatedly to ensure user can edit fields during search
+        def release_focus_aggressively():
+            """Release CEF focus multiple times to ensure it sticks"""
+            if CEF_AVAILABLE and self.cef_browser:
+                try:
+                    self.cef_browser.SetFocus(False)
+                    print("DEBUG: CEF focus released during search")
+                except:
+                    pass
+        
+        # Release focus immediately
+        release_focus_aggressively()
+        
+        # Schedule additional focus releases to ensure it sticks
+        self.root.after(50, release_focus_aggressively)
+        self.root.after(150, release_focus_aggressively)
+        self.root.after(300, release_focus_aggressively)
         
         # Clear previous results but don't reload map during search
         if self.results:
