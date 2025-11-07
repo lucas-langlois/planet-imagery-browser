@@ -113,6 +113,9 @@ class PlanetImageryBrowser:
         left_panel = tk.Frame(main_paned, width=400, bg='#f0f0f0')
         main_paned.add(left_panel, width=400, minsize=350, stretch="never")
         
+        # Bind click on left panel to release CEF focus
+        left_panel.bind('<Button-1>', self._on_left_panel_click)
+        
         right_panel = tk.Frame(main_paned, bg='white')
         main_paned.add(right_panel, stretch="always")
         
@@ -414,10 +417,21 @@ class PlanetImageryBrowser:
         # Schedule another focus check to ensure it sticks
         event.widget.after(50, lambda: event.widget.focus_force())
     
+    def _on_left_panel_click(self, event):
+        """Handle left panel click - release CEF focus"""
+        if CEF_AVAILABLE and self.cef_browser:
+            try:
+                self.cef_browser.SetFocus(False)
+            except:
+                pass
+    
     def _on_map_click(self, event):
         """Handle map click - give focus back to CEF"""
         if CEF_AVAILABLE and self.cef_browser:
-            self.cef_browser.SetFocus(True)
+            try:
+                self.cef_browser.SetFocus(True)
+            except:
+                pass
         self.cef_frame.focus_set()
     
     def _load_initial_map(self):
@@ -442,6 +456,17 @@ class PlanetImageryBrowser:
             self._render_html_in_cef(html_content)
             self.set_aoi_btn.config(state='normal')
             self.preview_info_label.config(text="Click '📍 Click Map to Set AOI' button, then click on the map to set your location")
+            
+            # Release CEF focus after map loads so user can edit search filters
+            self.root.after(500, self._release_cef_focus)
+    
+    def _release_cef_focus(self):
+        """Helper to release CEF focus"""
+        if CEF_AVAILABLE and self.cef_browser:
+            try:
+                self.cef_browser.SetFocus(False)
+            except:
+                pass
     
     def _build_base_map_html(self, center_lat, center_lon, zoom):
         """Build HTML for the base map without any imagery overlay"""
@@ -651,6 +676,13 @@ class PlanetImageryBrowser:
         self.aoi_selection_mode = False
         self.set_aoi_btn.config(text="📍 Click Map to Set AOI", bg='#FF9800')
         
+        # Release CEF focus so user can interact with controls
+        if CEF_AVAILABLE and self.cef_browser:
+            try:
+                self.cef_browser.SetFocus(False)
+            except:
+                pass
+        
         # Recalculate AOI
         self.calculate_aoi()
         
@@ -710,12 +742,28 @@ class PlanetImageryBrowser:
             
     def reset_search(self):
         """Reset search and reload initial map"""
+        # Release CEF focus so user can interact with controls
+        if CEF_AVAILABLE and self.cef_browser:
+            try:
+                self.cef_browser.SetFocus(False)
+            except:
+                pass
+        
         self._reset_search_state(reload_map=True)
         self.status_label.config(text="Ready to search")
         messagebox.showinfo("Reset Complete", "Search cleared. Set your AOI and search again.")
     
     def perform_search(self):
         """Execute the search with current filter settings"""
+        
+        print("DEBUG: Starting search...")
+        
+        # Release CEF focus immediately so user can edit fields during search
+        if CEF_AVAILABLE and self.cef_browser:
+            try:
+                self.cef_browser.SetFocus(False)
+            except:
+                pass
         
         # Clear previous results but don't reload map during search
         if self.results:
@@ -733,6 +781,7 @@ class PlanetImageryBrowser:
         thread = threading.Thread(target=self._search_thread)
         thread.daemon = True
         thread.start()
+        print("DEBUG: Search thread started")
     
     def _reset_search_state(self, reload_map=True):
         """Reset all state from previous search"""
