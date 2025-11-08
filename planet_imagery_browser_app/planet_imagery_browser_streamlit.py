@@ -82,6 +82,7 @@ def check_api_key(api_key):
 def calculate_aoi(center_lat, center_lon, grid_size):
     """Calculate AOI bounding box from center point and grid size"""
     # Each tile at zoom 17 is approximately 256 pixels * (156543.03 meters/pixel at equator / 2^17)
+    # At this latitude (~19°S), tile width is ~192 meters
     tile_size_m = 256 * 156543.03 * math.cos(math.radians(abs(center_lat))) / (2 ** 17)
     
     # Calculate total side length based on grid size
@@ -114,25 +115,25 @@ def calculate_aoi(center_lat, center_lon, grid_size):
     
     return aoi, (center_lat, center_lon, min_lat, max_lat, min_lon, max_lon)
 
-def perform_search(aoi, start_date, end_date, max_cloud, item_type):
+def perform_search(aoi, start_date, end_date, min_coverage, item_type):
     """Execute the search with current filter settings"""
-    # Build filters
+    # Build filters (no cloud cover filter, use visible percent instead)
     date_filter_obj = data_filter.date_range_filter(
         field_name="acquired",
         gte=start_date,
         lte=end_date
     )
     
-    cloud_filter_obj = data_filter.range_filter(
-        field_name="cloud_cover",
-        lte=max_cloud / 100.0
+    coverage_filter_obj = data_filter.range_filter(
+        field_name="visible_percent",
+        gte=min_coverage
     )
     
     geometry_filter_obj = data_filter.geometry_filter(aoi)
     
     combined_filter = data_filter.and_filter([
         date_filter_obj,
-        cloud_filter_obj,
+        coverage_filter_obj,
         geometry_filter_obj
     ])
     
@@ -140,7 +141,7 @@ def perform_search(aoi, start_date, end_date, max_cloud, item_type):
     search_results = pl.data.search(
         item_types=[item_type],
         search_filter=combined_filter,
-        limit=0
+        limit=0  # No limit - fetch all results
     )
     
     # Collect results
@@ -150,14 +151,83 @@ def perform_search(aoi, start_date, end_date, max_cloud, item_type):
     
     return results
 
+def save_as_geotiff(image, bounds, item_id, preview_mode):
+    """Save preview as georeferenced GeoTIFF"""
+    try:
+        from osgeo import gdal, osr
+        import numpy as np
+        import tempfile
+        
+        min_lat, max_lat, min_lon, max_lon = bounds
+        
+        # Convert PIL Image to numpy array
+        img_array = np.array(image)
+        
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(mode='w+b', suffix='.tif', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        # Create GeoTIFF
+        driver = gdal.GetDriverByName('GTiff')
+        height, width = img_array.shape[:2]
+        bands = 3 if len(img_array.shape) == 3 else 1
+        
+        dataset = driver.Create(tmp_path, width, height, bands, gdal.GDT_Byte,
+                              options=['COMPRESS=LZW', 'TILED=YES'])
+        
+        # Set geotransform (defines the affine transformation)
+        # [top-left x, pixel width, 0, top-left y, 0, pixel height (negative)]
+        pixel_width = (max_lon - min_lon) / width
+        pixel_height = (min_lat - max_lat) / height
+        geotransform = [min_lon, pixel_width, 0, max_lat, 0, pixel_height]
+        dataset.SetGeoTransform(geotransform)
+        
+        # Set projection (WGS84)
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+        dataset.SetProjection(srs.ExportToWkt())
+        
+        # Write image data
+        if bands == 3:
+            for i in range(3):
+                dataset.GetRasterBand(i + 1).WriteArray(img_array[:, :, i])
+        else:
+            dataset.GetRasterBand(1).WriteArray(img_array)
+        
+        # Add metadata
+        dataset.SetMetadataItem('PLANET_ITEM_ID', item_id)
+        dataset.SetMetadataItem('PREVIEW_MODE', preview_mode)
+        dataset.SetMetadataItem('ZOOM_LEVEL', '17')
+        
+        # Close dataset
+        dataset.FlushCache()
+        dataset = None
+        
+        # Read the file back
+        with open(tmp_path, 'rb') as f:
+            geotiff_data = f.read()
+        
+        # Clean up temp file
+        import os
+        os.unlink(tmp_path)
+        
+        return geotiff_data
+        
+    except ImportError:
+        # GDAL not available, return None
+        return None
+
 def load_preview_tiles(item_id, item_type, center_lat, center_lon, grid_size, preview_mode):
     """Load and mosaic preview tiles"""
-    # Determine zoom level and grid size based on preview mode
+    # Use zoom 17 for the selected grid size (consistent with tkinter version)
+    zoom = 17
+    
+    # Determine tile fetch pattern based on preview mode
     if preview_mode == 'full':
-        zoom = 16
-        display_grid_size = 5
+        # Full scene: use 15x15 grid for wider view (same zoom for consistent tile resolution)
+        display_grid_size = 15
     else:
-        zoom = 17
+        # AOI view: use the selected grid size
         display_grid_size = grid_size
     
     # Calculate tile coordinates
@@ -199,7 +269,7 @@ def load_preview_tiles(item_id, item_type, center_lat, center_lon, grid_size, pr
                 y_pos = (i // display_grid_size) * tile_size
                 mosaic.paste(tile_img, (x_pos, y_pos))
         
-        # Draw center marker
+        # Draw center marker (red circle with white outline for visibility)
         draw = ImageDraw.Draw(mosaic)
         center_x = tile_size * display_grid_size / 2
         center_y = tile_size * display_grid_size / 2
@@ -211,9 +281,33 @@ def load_preview_tiles(item_id, item_type, center_lat, center_lon, grid_size, pr
         draw.ellipse(circle_bbox, outline='white', width=4)
         draw.ellipse(circle_bbox, outline='red', width=3)
         
-        return mosaic
+        # Calculate geographic bounds of the mosaic
+        tile_x_values = [tx for tx, _ in tiles_to_fetch]
+        tile_y_values = [ty for _, ty in tiles_to_fetch]
+        
+        min_tile_x = min(tile_x_values)
+        max_tile_x = max(tile_x_values)
+        min_tile_y = min(tile_y_values)
+        max_tile_y = max(tile_y_values)
+        
+        # Helper functions for tile to lat/lon conversion
+        def tile_x_to_lon(x, zoom):
+            return x / (2 ** zoom) * 360.0 - 180.0
+        
+        def tile_y_to_lat(y, zoom):
+            n = math.pi - (2.0 * math.pi * y) / (2 ** zoom)
+            return math.degrees(math.atan(math.sinh(n)))
+        
+        min_lon = tile_x_to_lon(min_tile_x, zoom)
+        max_lon = tile_x_to_lon(max_tile_x + 1, zoom)
+        max_lat = tile_y_to_lat(min_tile_y, zoom)
+        min_lat = tile_y_to_lat(max_tile_y + 1, zoom)
+        
+        bounds = (min_lat, max_lat, min_lon, max_lon)
+        
+        return mosaic, bounds
     
-    return None
+    return None, None
 
 def get_tide_height_for_item(item_id, tide_data):
     """Extract datetime from satellite item ID and match with tide data"""
@@ -262,7 +356,7 @@ def get_tide_height_for_item(item_id, tide_data):
         return None
 
 def parse_tide_csv(df):
-    """Parse tide data from CSV formats."""
+    """Parse tide data from CSV formats (supports both AEST and UTC)."""
     tide_data = {}
     normalized = {}
     for col in df.columns:
@@ -279,10 +373,12 @@ def parse_tide_csv(df):
     line_count = 0
 
     if datetime_col and height_col:
+        # AEST format: DateTime & Height columns
         branch = 'aest'
         tz_info = "Converted from AEST to UTC timezone"
         aest = pytz.timezone('Australia/Brisbane')
     elif datetime_col and tide_height_col:
+        # UTC format: datetime & tide_height columns
         branch = 'utc'
         tz_info = "Parsed native UTC tide timestamps"
     else:
@@ -298,28 +394,32 @@ def parse_tide_csv(df):
 
         try:
             if branch == 'aest':
+                # Parse AEST datetime and convert to UTC
                 dt_naive = datetime.strptime(dt_str, "%d/%m/%Y %H:%M")
                 dt_aest = aest.localize(dt_naive)
                 dt_utc = dt_aest.astimezone(pytz.UTC)
                 height_value = row[height_col]
             else:
+                # Parse UTC datetime
                 dt_utc = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
                 height_value = row[tide_height_col]
 
             height_value = float(str(height_value).strip())
 
+            # Round to nearest 10 minutes to match tide data
             dt_rounded = dt_utc.replace(second=0, microsecond=0)
             dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
 
             tide_data[dt_rounded] = height_value
             line_count += 1
-        except Exception:
+        except Exception as row_error:
+            # Skip rows with parsing errors
             continue
 
     return tide_data, line_count, tz_info
 
 def parse_tide_txt(uploaded_file):
-    """Parse equispaced tide predictions from text files."""
+    """Parse 10-minute equispaced tide predictions from text files."""
     content = uploaded_file.getvalue().decode('utf-8', errors='ignore').splitlines()
     tide_data = {}
     line_count = 0
@@ -331,6 +431,7 @@ def parse_tide_txt(uploaded_file):
             continue
 
         if not header_found:
+            # Look for header line containing 'date' and 'height'
             if line.lower().startswith('date') and 'height' in line.lower():
                 header_found = True
             continue
@@ -343,16 +444,20 @@ def parse_tide_txt(uploaded_file):
         height_str = parts[-1]
 
         try:
+            # Parse datetime (assuming format: DD/MM/YYYY HH:MM)
             dt_naive = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M")
+            # Assume UTC timezone (ZULU)
             dt_utc = dt_naive.replace(tzinfo=timezone.utc)
             tide_height = float(height_str)
 
+            # Round to nearest 10 minutes to match other formats
             dt_rounded = dt_utc.replace(second=0, microsecond=0)
             dt_rounded = dt_rounded.replace(minute=(dt_rounded.minute // 10) * 10)
 
             tide_data[dt_rounded] = tide_height
             line_count += 1
         except Exception:
+            # Skip rows with parsing errors
             continue
 
     if not header_found:
@@ -573,10 +678,10 @@ with st.sidebar:
     with col2:
         end_date = st.date_input("End Date", value=datetime(2025, 5, 31))
     
-    # Filters
-    st.subheader("Cloud Cover")
-    max_cloud = st.slider("Maximum acceptable cloud cover (%)", 0, 100, 5)
-    st.caption("Imagery with cloud cover greater than this value will be excluded from search results.")
+    # Coverage Section (no cloud filter, use visible percent instead)
+    st.subheader("Coverage")
+    min_coverage = st.slider("Minimum Visible (%)", 0, 100, 100)
+    st.caption("Only imagery with at least this much visible area will be included in search results.")
     
     item_type = st.selectbox("Item Type", ["PSScene"])
     
@@ -584,23 +689,37 @@ with st.sidebar:
     st.subheader("Download Options")
     clip_to_aoi = st.checkbox("Clip to AOI", value=True, help="Download only the selected area")
     
-    # Search Button
-    if st.button("🔍 Search", type="primary"):
-        with st.spinner("Searching for imagery..."):
-            aoi, aoi_bounds = calculate_aoi(center_lat, center_lon, grid_size)
-            st.session_state.aoi_bounds = aoi_bounds
-            
-            start_dt = datetime.combine(start_date, datetime.min.time())
-            end_dt = datetime.combine(end_date, datetime.max.time())
-            
-            results = perform_search(aoi, start_dt, end_dt, max_cloud, item_type)
-            st.session_state.results = results
+    # Search and Reset buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔍 Search", type="primary", use_container_width=True):
+            with st.spinner("Searching for imagery..."):
+                aoi, aoi_bounds = calculate_aoi(center_lat, center_lon, grid_size)
+                st.session_state.aoi_bounds = aoi_bounds
+                
+                start_dt = datetime.combine(start_date, datetime.min.time())
+                end_dt = datetime.combine(end_date, datetime.max.time())
+                
+                results = perform_search(aoi, start_dt, end_dt, min_coverage, item_type)
+                st.session_state.results = results
+                st.session_state.exposure_status = {}
+                st.session_state.selection_flags = {}
+                st.session_state.current_preview_index = 0
+                st.session_state.preview_mode = 'aoi'
+                
+                st.success(f"✅ Found {len(results)} scenes!")
+    
+    with col2:
+        if st.button("🔄 Reset", use_container_width=True):
+            # Clear all session state
+            st.session_state.results = []
             st.session_state.exposure_status = {}
             st.session_state.selection_flags = {}
+            st.session_state.tide_data = {}
             st.session_state.current_preview_index = 0
             st.session_state.preview_mode = 'aoi'
-            
-            st.success(f"✅ Found {len(results)} scenes!")
+            st.session_state.aoi_bounds = None
+            st.rerun()
     
     # Tide Data
     st.subheader("🌊 Tide Data")
@@ -741,21 +860,29 @@ else:
                     acquired_dt = datetime.fromisoformat(props['acquired'].replace('Z', '+00:00'))
                     tide_height = get_tide_height_for_item(item_id, st.session_state.tide_data)
 
+                    # Format values with proper handling of None/missing values
+                    visible_val = props.get('visible_percent')
+                    clear_val = props.get('clear_percent')
+                    gsd_val = props.get('gsd')
+                    view_angle_val = props.get('view_angle')
+                    sun_elev_val = props.get('sun_elevation')
+                    sun_azi_val = props.get('sun_azimuth')
+
                     export_data.append({
                         'Item ID': item_id,
                         'Acquired Date': acquired_dt.strftime('%Y-%m-%d'),
                         'Acquired Time': acquired_dt.strftime('%H:%M:%S'),
                         'Cloud Cover (%)': f"{props['cloud_cover']*100:.2f}",
-                        'Visible Percent (%)': props.get('visible_percent', ''),
-                        'Clear Percent (%)': props.get('clear_percent', ''),
-                        'GSD (m)': props.get('gsd', ''),
+                        'Visible Percent (%)': f"{visible_val:.1f}" if isinstance(visible_val, (int, float)) else '',
+                        'Clear Percent (%)': f"{clear_val:.1f}" if isinstance(clear_val, (int, float)) else '',
+                        'GSD (m)': f"{gsd_val:.2f}" if isinstance(gsd_val, (int, float)) else '',
                         'Tide Height (m)': f"{tide_height:.2f}" if tide_height is not None else "",
                         'Satellite ID': props.get('satellite_id', ''),
                         'Item Type': props.get('item_type', ''),
                         'Exposure Status': st.session_state.exposure_status.get(item_id, 'Not Marked'),
-                        'View Angle': props.get('view_angle', ''),
-                        'Sun Elevation': props.get('sun_elevation', ''),
-                        'Sun Azimuth': props.get('sun_azimuth', '')
+                        'View Angle': f"{view_angle_val:.2f}" if isinstance(view_angle_val, (int, float)) else '',
+                        'Sun Elevation': f"{sun_elev_val:.2f}" if isinstance(sun_elev_val, (int, float)) else '',
+                        'Sun Azimuth': f"{sun_azi_val:.2f}" if isinstance(sun_azi_val, (int, float)) else ''
                     })
 
                 df_export = pd.DataFrame(export_data)
@@ -763,7 +890,7 @@ else:
                 st.download_button(
                     label="💾 Download CSV",
                     data=csv,
-                    file_name=f"planet_imagery_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    file_name=f"planet_imagery_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
                     key="export_results"
                 )
@@ -837,7 +964,7 @@ else:
             center_lat, center_lon, min_lat, max_lat, min_lon, max_lon = st.session_state.aoi_bounds
             
             with st.spinner("Loading preview..."):
-                preview_image = load_preview_tiles(
+                preview_image, preview_bounds = load_preview_tiles(
                     item_id, item_type, center_lat, center_lon, grid_size, 
                     st.session_state.preview_mode
                 )
@@ -845,15 +972,41 @@ else:
             if preview_image:
                 st.image(preview_image, caption=f"Preview: {item_id}", use_container_width=True)
                 
-                # Download preview button
-                buf = BytesIO()
-                preview_image.save(buf, format='PNG')
-                st.download_button(
-                    label="💾 Download Preview",
-                    data=buf.getvalue(),
-                    file_name=f"{item_id}_preview.png",
-                    mime="image/png"
-                )
+                # Download preview buttons
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Download as PNG
+                    buf = BytesIO()
+                    preview_image.save(buf, format='PNG')
+                    mode_suffix = "full_scene" if st.session_state.preview_mode == 'full' else "aoi"
+                    st.download_button(
+                        label="💾 Download PNG",
+                        data=buf.getvalue(),
+                        file_name=f"{item_id}_{mode_suffix}.png",
+                        mime="image/png",
+                        use_container_width=True
+                    )
+                
+                with col2:
+                    # Download as GeoTIFF
+                    geotiff_data = save_as_geotiff(preview_image, preview_bounds, item_id, st.session_state.preview_mode)
+                    if geotiff_data:
+                        st.download_button(
+                            label="💾 Download GeoTIFF",
+                            data=geotiff_data,
+                            file_name=f"{item_id}_{mode_suffix}.tif",
+                            mime="image/tiff",
+                            use_container_width=True,
+                            help="Georeferenced TIFF (EPSG:4326)"
+                        )
+                    else:
+                        st.button(
+                            "💾 GeoTIFF (GDAL required)",
+                            disabled=True,
+                            use_container_width=True,
+                            help="Install GDAL: conda install -c conda-forge gdal"
+                        )
 
                 download_status = st.empty()
                 download_link_placeholder = st.empty()
